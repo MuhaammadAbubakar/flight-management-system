@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+supabase
+pydantic[email]
+slowapi
+python-dotenv
