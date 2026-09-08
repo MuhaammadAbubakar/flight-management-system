@@ -13,7 +13,7 @@ app = FastAPI(
 )
 
 origins = [
-    "http://localhost:3000",
+    "https://merasafar.site.je",   
     "http://localhost:5173",
     "https://*.railway.app",
     "*"  # Development aur presentation ke waqt "*" har domain ko allow kar deta hai
