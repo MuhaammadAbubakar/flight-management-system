@@ -5,4 +5,4 @@ psycopg2-binary
 supabase
 pydantic[email]
 slowapi
-python-dotenv
+python-dotenvcorn main:app --r

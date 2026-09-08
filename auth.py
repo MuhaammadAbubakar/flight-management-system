@@ -1,11 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from datetime import datetime, timedelta, timezone
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from database import supabase
+from database import supabase, reset_supabase_auth
 from schemas import UserAuthSchema
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 security = HTTPBearer()
+
+def normalize_role(role: str) -> str:
+    if not role:
+        return "user"
+    return role.strip().lower().replace("-", "_").replace(" ", "_")
 
 # --- 1. TOKEN VERIFY KARNA AUR LIVE ROLE DATABASE SE NIKALNA ---
 def get_current_user_with_role(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -17,15 +22,19 @@ def get_current_user_with_role(credentials: HTTPAuthorizationCredentials = Depen
         
         user_id = user_response.user.id
 
-        # Profile table se role read karein
+        # Always ensure clean postgrest client with server key
+        reset_supabase_auth()
         profile = supabase.table("profiles").select("role").eq("id", user_id).execute()
         if not profile.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile record nahi mila")
 
+        raw_role = profile.data[0].get("role", "user")
+        normalized_role = normalize_role(raw_role)
+
         return {
             "id": user_id,
             "email": user_response.user.email,
-            "role": profile.data[0].get("role", "user")  # Default 'user'
+            "role": normalized_role  # Always normalized e.g. 'ops_agent', 'super_admin', 'user'
         }
 
     except HTTPException:
@@ -36,7 +45,7 @@ def get_current_user_with_role(credentials: HTTPAuthorizationCredentials = Depen
 
 # --- 2. PERMISSION GUARDS ---
 def verify_super_admin(user=Depends(get_current_user_with_role)):
-    if user["role"] != "super_admin":
+    if normalize_role(user["role"]) != "super_admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="Access Denied: Sirf Super-Admin ko yeh action allow hai"
@@ -45,7 +54,7 @@ def verify_super_admin(user=Depends(get_current_user_with_role)):
 
 
 def verify_ops_or_admin(user=Depends(get_current_user_with_role)):
-    if user["role"] not in ["super_admin", "ops_agent"]:
+    if normalize_role(user["role"]) not in ["super_admin", "ops_agent"]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
             detail="Access Denied: Super-Admin ya Ops-Agent permissions darkar hain"
@@ -76,6 +85,8 @@ def sign_up(user: UserAuthSchema):
 # --- 4. SIGNIN ---
 @router.post("/signin")
 def sign_in(user: UserAuthSchema):
+    # Always reset auth header so PostgREST uses the server API key, not an expired user JWT
+    reset_supabase_auth()
     profile_res = supabase.table("profiles").select("*").eq("email", user.email).execute()
     if profile_res.data:
         profile = profile_res.data[0]
@@ -106,24 +117,34 @@ def sign_in(user: UserAuthSchema):
         if not session:
             raise Exception("Invalid email or password")
 
+        token = getattr(session, "access_token", None)
+        if not token and isinstance(session, dict):
+            token = session.get("access_token")
+
+        # Immediately restore postgrest client header to server key
+        reset_supabase_auth()
+
         if profile_res.data:
             supabase.table("profiles").update({
                 "failed_attempts": 0, 
                 "locked_until": None
             }).eq("email", user.email).execute()
 
-        token = getattr(session, "access_token", None)
-        if not token and isinstance(session, dict):
-            token = session.get("access_token")
+        raw_role = profile_res.data[0].get("role", "user") if profile_res.data else "user"
+        user_role = normalize_role(raw_role)
 
         return {
             "message": "Login successful",
-            "token": token
+            "token": token,
+            "email": user.email,
+            "role": user_role
         }
 
     except HTTPException:
         raise
     except Exception:
+        # Restore postgrest client header to server key before updating failed attempts
+        reset_supabase_auth()
         if profile_res.data:
             profile = profile_res.data[0]
             current_attempts = (profile.get("failed_attempts") or 0) + 1
@@ -142,3 +163,5 @@ def sign_in(user: UserAuthSchema):
                 )
 
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+    finally:
+        reset_supabase_auth()
