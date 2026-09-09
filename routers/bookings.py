@@ -167,39 +167,54 @@ def join_waitlist(payload: WaitlistCreateSchema, db: Session = Depends(get_db)):
     try:
         # Flight number se UUID resolve karo
         flight = db.execute(
-            text("SELECT id FROM flights WHERE UPPER(flight_number) = UPPER(:fn);"),
+            text("SELECT id, flight_number FROM flights WHERE UPPER(flight_number) = UPPER(:fn);"),
             {"fn": payload.flight_number}
         ).fetchone()
         if not flight:
             raise HTTPException(status_code=404, detail=f"Flight '{payload.flight_number}' nahi mili!")
 
-        # Duplicate waitlist check
+        # Duplicate waitlist check (same flight, class, fare_type, email aur WAITING status)
         existing = db.execute(text("""
             SELECT id FROM waitlist
             WHERE flight_id = :fid
               AND UPPER(seat_class) = UPPER(:cls)
-              AND LOWER(passenger_email) = LOWER(:email);
-        """), {"fid": flight[0], "cls": payload.seat_class, "email": payload.passenger_email}).fetchone()
+              AND UPPER(COALESCE(fare_type, 'BASIC')) = UPPER(:fare)
+              AND LOWER(passenger_email) = LOWER(:email)
+              AND (status IS NULL OR status = 'WAITING');
+        """), {
+            "fid": flight[0],
+            "cls": payload.seat_class,
+            "fare": payload.fare_type,
+            "email": payload.passenger_email
+        }).fetchone()
 
         if existing:
             raise HTTPException(
                 status_code=409,
-                detail=f"'{payload.passenger_email}' pehle se {payload.flight_number} - {payload.seat_class} ki waitlist mein hai!"
+                detail=f"'{payload.passenger_email}' pehle se {payload.flight_number} - {payload.seat_class} ({payload.fare_type}) ki waitlist mein hai!"
             )
 
         res = db.execute(text("""
-            INSERT INTO waitlist (flight_id, seat_class, passenger_email, priority)
-            VALUES (:fid, :cls, :email, :prio)
+            INSERT INTO waitlist (flight_id, seat_class, fare_type, passenger_email, priority, status)
+            VALUES (:fid, :cls, :fare, :email, :prio, 'WAITING')
             RETURNING id;
         """), {
             "fid": flight[0],
             "cls": payload.seat_class.upper(),
+            "fare": payload.fare_type.upper(),
             "email": payload.passenger_email.lower(),   # Always lowercase
             "prio": payload.priority
         }).fetchone()
 
         db.commit()
-        return {"status": "WAITLISTED", "waitlist_id": str(res[0])}
+        return {
+            "status": "WAITLISTED",
+            "waitlist_id": str(res[0]),
+            "flight_number": payload.flight_number.upper(),
+            "seat_class": payload.seat_class.upper(),
+            "fare_type": payload.fare_type.upper(),
+            "priority": payload.priority
+        }
     except HTTPException:
         db.rollback()
         raise
@@ -269,16 +284,90 @@ def cancel_booking(payload: CancelBookingSchema, db: Session = Depends(get_db)):
                 {"bid": bid}
             )
 
-        # 4. Seat inventory wapas karo (booked_seats ghatao)
-        db.execute(text("""
-            UPDATE seat_inventory
-            SET booked_seats = GREATEST(COALESCE(booked_seats, 0) - :cnt, 0)
-            WHERE flight_id = :fid AND seat_class = :cls;
-        """), {
-            "cnt": payload.seats_to_cancel,
-            "fid": flight_uuid,
-            "cls": payload.seat_class.upper()
-        })
+        # 4. Waitlist Auto-Allocation Engine:
+        # Jab koi seat cancel hoti hai, waitlist se matching candidates choose karo
+        promoted_passengers = []
+        for cancelled_fare in fare_types:
+            # 1st Priority: Exact match on flight, cabin class, fare_type, status='WAITING'
+            candidate = db.execute(text("""
+                SELECT id, passenger_email, priority, COALESCE(fare_type, 'BASIC') as fare_type
+                FROM waitlist
+                WHERE flight_id = :fid
+                  AND UPPER(seat_class) = UPPER(:cls)
+                  AND UPPER(COALESCE(fare_type, 'BASIC')) = UPPER(:fare)
+                  AND (status IS NULL OR status = 'WAITING')
+                ORDER BY priority DESC, created_at ASC
+                LIMIT 1;
+            """), {
+                "fid": flight_uuid,
+                "cls": payload.seat_class.upper(),
+                "fare": cancelled_fare
+            }).fetchone()
+
+            # 2nd Priority: Agar exact fare_type candidate nahi mila, to same flight & class ka any waiting candidate
+            if not candidate:
+                candidate = db.execute(text("""
+                    SELECT id, passenger_email, priority, COALESCE(fare_type, 'BASIC') as fare_type
+                    FROM waitlist
+                    WHERE flight_id = :fid
+                      AND UPPER(seat_class) = UPPER(:cls)
+                      AND (status IS NULL OR status = 'WAITING')
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT 1;
+                """), {
+                    "fid": flight_uuid,
+                    "cls": payload.seat_class.upper()
+                }).fetchone()
+
+            if candidate:
+                w_id, cand_email, cand_prio, cand_fare = candidate[0], candidate[1], candidate[2], candidate[3]
+
+                # Update waitlist status to PROMOTED
+                db.execute(text("""
+                    UPDATE waitlist
+                    SET status = 'PROMOTED'
+                    WHERE id = :wid;
+                """), {"wid": w_id})
+
+                # Create CONFIRMED booking for promoted passenger
+                p_name = cand_email.split('@')[0].replace('.', ' ').title()
+                allocated_fare = cand_fare or cancelled_fare
+
+                new_booking_id = db.execute(text("""
+                    INSERT INTO bookings (flight_id, seat_class, passenger_name, passenger_email, fare_type, status)
+                    VALUES (:fid, :cls, :name, :email, :fare, 'CONFIRMED')
+                    RETURNING id;
+                """), {
+                    "fid": flight_uuid,
+                    "cls": payload.seat_class.upper(),
+                    "name": p_name,
+                    "email": cand_email.lower(),
+                    "fare": allocated_fare
+                }).scalar()
+
+                promoted_passengers.append({
+                    "waitlist_id": str(w_id),
+                    "passenger_email": cand_email,
+                    "passenger_name": p_name,
+                    "seat_class": payload.seat_class.upper(),
+                    "fare_type": allocated_fare,
+                    "priority": cand_prio,
+                    "new_booking_id": str(new_booking_id),
+                    "note": f"Auto-promoted from waitlist queue (Priority {cand_prio})"
+                })
+
+        # Net seats released = cancelled seats minus those directly allocated to waitlist
+        net_seats_released = payload.seats_to_cancel - len(promoted_passengers)
+        if net_seats_released > 0:
+            db.execute(text("""
+                UPDATE seat_inventory
+                SET booked_seats = GREATEST(COALESCE(booked_seats, 0) - :cnt, 0)
+                WHERE flight_id = :fid AND seat_class = :cls;
+            """), {
+                "cnt": net_seats_released,
+                "fid": flight_uuid,
+                "cls": payload.seat_class.upper()
+            })
 
         db.commit()
 
@@ -320,7 +409,7 @@ def cancel_booking(payload: CancelBookingSchema, db: Session = Depends(get_db)):
                 "note": "No refund — non-refundable BASIC ticket"
             })
 
-        # 5. Remaining confirmed seats check (class aur fare_type ke hisaab se)
+        # 7. Remaining confirmed seats check (class aur fare_type ke hisaab se)
         remaining = db.execute(text("""
             SELECT seat_class, fare_type, COUNT(*) as cnt
             FROM bookings
@@ -346,6 +435,8 @@ def cancel_booking(payload: CancelBookingSchema, db: Session = Depends(get_db)):
             "flight_number": payload.flight_number.upper(),
             "seat_class": payload.seat_class.upper(),
             "seats_cancelled": payload.seats_to_cancel,
+            "waitlist_promotions": promoted_passengers,
+            "promoted_count": len(promoted_passengers),
             "refund": {
                 "total_refund_amount": round(total_refund, 2),
                 "breakdown": refund_breakdown
@@ -366,7 +457,7 @@ def cancel_booking(payload: CancelBookingSchema, db: Session = Depends(get_db)):
 
 @router.get("/passenger/{email}")
 def get_passenger_bookings(email: str, db: Session = Depends(get_db)):
-    """Passenger ki saari bookings (confirmed & cancelled) flight details ke sath fetch karein"""
+    """Passenger ki saari bookings (confirmed & cancelled) aur active waitlist requests fetch karein"""
     query = text("""
         SELECT b.id, b.seat_class, b.passenger_name, b.passenger_email, 
                b.fare_type, b.status, b.created_at,
@@ -400,4 +491,36 @@ def get_passenger_bookings(email: str, db: Session = Depends(get_db)):
             "price_paid": final_price
         })
 
-    return {"email": email.lower(), "count": len(bookings), "bookings": bookings}
+    # Waitlist requests for this passenger
+    waitlist_query = text("""
+        SELECT w.id, w.seat_class, COALESCE(w.fare_type, 'BASIC') as fare_type,
+               w.priority, COALESCE(w.status, 'WAITING') as status, w.created_at,
+               f.flight_number, f.origin, f.destination, f.departure_time
+        FROM waitlist w
+        JOIN flights f ON w.flight_id = f.id
+        WHERE LOWER(w.passenger_email) = LOWER(:email)
+        ORDER BY w.created_at DESC;
+    """)
+    w_rows = db.execute(waitlist_query, {"email": email}).fetchall()
+    waitlists = []
+    for wr in w_rows:
+        waitlists.append({
+            "waitlist_id": str(wr[0]),
+            "seat_class": wr[1],
+            "fare_type": wr[2],
+            "priority": wr[3],
+            "status": wr[4],
+            "created_at": str(wr[5]),
+            "flight_number": wr[6],
+            "origin": wr[7],
+            "destination": wr[8],
+            "departure_time": str(wr[9])
+        })
+
+    return {
+        "email": email.lower(), 
+        "count": len(bookings), 
+        "bookings": bookings,
+        "waitlist": waitlists
+    }
+

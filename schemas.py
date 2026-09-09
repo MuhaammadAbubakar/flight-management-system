@@ -82,13 +82,19 @@ class GroupBookingSchema(BaseModel):
 class WaitlistCreateSchema(BaseModel):
     flight_number: str                              # e.g. "PK500"
     seat_class: Literal["ECONOMY", "BUSINESS", "FIRST"]
+    fare_type: Literal["BASIC", "FLEX"] = "BASIC"   # BASIC or FLEX fare preference
     passenger_email: EmailStr
     priority: int = 1  # 1 for standard, 2 for loyalty/VIP
 
-    @field_validator("seat_class", mode="before")
+    @field_validator("flight_number", mode="before")
     @classmethod
-    def uppercase_seat_class(cls, v):
-        return v.upper() if isinstance(v, str) else v
+    def uppercase_flight_number(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
+
+    @field_validator("seat_class", "fare_type", mode="before")
+    @classmethod
+    def uppercase_enum_fields(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 # --- Cancellation Schema ---
