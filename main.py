@@ -9,7 +9,9 @@ import auth
 app = FastAPI(
     title="Mera Safar - Flight Management System",
     description="Dual-writer transactional core & luxury flight booking portal",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url=None,     # Swagger UI disable
+    redoc_url=None     # ReDoc disable
 )
 
 origins = [

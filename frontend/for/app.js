@@ -1359,12 +1359,15 @@ const app = {
   setupAuthUI() {
     const user = api.getCurrentUser();
     const container = document.getElementById('nav-auth-container');
+    const adminTabBtn = document.getElementById('tab-btn-admin');
+    const homeAuthCard = document.getElementById('home-auth-main-card');
 
     if (user && user.email) {
       const initial = user.email.charAt(0).toUpperCase();
       const role = (user.role || 'user').toLowerCase().replace('-', '_');
       const roleClass = `role-${role}`;
       const roleLabel = role.replace('_', ' ').toUpperCase();
+      const isPrivileged = role === 'super_admin' || role === 'ops_agent';
 
       container.innerHTML = `
         <div class="user-pill">
@@ -1376,6 +1379,13 @@ const app = {
           <i class="fa-solid fa-right-from-bracket"></i> Sign Out
         </button>
       `;
+
+      // Show Operations tab only for super_admin and ops_agent
+      if (adminTabBtn) adminTabBtn.style.display = isPrivileged ? '' : 'none';
+
+      // Hide login/signup card when already logged in
+      if (homeAuthCard) homeAuthCard.style.display = 'none';
+
     } else {
       container.innerHTML = `
         <button class="btn btn-secondary btn-sm" onclick="app.openAuthModal('signin')">
@@ -1385,6 +1395,12 @@ const app = {
           Sign Up
         </button>
       `;
+
+      // Show Operations tab button again (it won't be accessible without login anyway)
+      if (adminTabBtn) adminTabBtn.style.display = 'none'; // hide for non-logged-in users too
+
+      // Show login/signup card for guests
+      if (homeAuthCard) homeAuthCard.style.display = '';
     }
   },
 
