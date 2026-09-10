@@ -72,3 +72,4 @@ Frontend Delivery: Static assets served with CORS origin policies configured to 
 
 License
 This project was developed for demonstration, portfolio, and hackathon operational showcases. Open-sourced under the MIT License.
+Deployed on Oracle Cloud
