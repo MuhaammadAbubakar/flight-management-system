@@ -140,3 +140,23 @@ class SupportTicketCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError("customer_query cannot be empty!")
         return v.strip()
+
+
+# --- Admin Policy Document Ingestion Schema (Vector Knowledge Base) ---
+class PolicyIngestionRequest(BaseModel):
+    document_title: str
+    category: str
+    content: str
+
+    @field_validator("document_title", "category", "content")
+    @classmethod
+    def validate_non_empty(cls, v):
+        if not v or not str(v).strip():
+            raise ValueError("Field cannot be empty!")
+        return str(v).strip()
+
+
+# --- Chatbot Query Schema ---
+class ChatQueryRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None

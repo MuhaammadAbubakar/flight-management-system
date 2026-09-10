@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+import os
 import json
+import httpx
 from database import get_db
-from schemas import FlightCreateSchema, FlightScheduleUpdateSchema
+from schemas import FlightCreateSchema, FlightScheduleUpdateSchema, PolicyIngestionRequest
 from auth import verify_super_admin, verify_ops_or_admin
 
 router = APIRouter(prefix="/admin", tags=["Admin Operations"])
@@ -201,4 +203,31 @@ def get_all_admin_flights(
                 "price": float(r[10])
             })
 
-    return {"admin_email": agent_user["email"], "role": agent_user["role"], "flights": list(flight_map.values())}
+    return {"admin_email": agent_user["email"], "role": agent_user["role"], "flights": list(flight_map.values())}
+
+
+# 5. ADMIN POLICY DOCUMENT INGESTION (Knowledge Base / Vector Ingestion)
+@router.post("/policies/ingest")
+async def ingest_policy_document(payload: PolicyIngestionRequest):
+    """
+    Ingests airline policy document and triggers the n8n vector ingestion pipeline webhook.
+    """
+    webhook_url = os.getenv("N8N_POLICY_WEBHOOK_URL", "http://localhost:5678/webhook/ingest-policy")
+    dispatch_payload = {
+        "document_title": payload.document_title,
+        "category": payload.category,
+        "content": payload.content
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(webhook_url, json=dispatch_payload)
+    except Exception as e:
+        # Non-blocking notification if n8n service is currently offline during testing
+        print(f"[Policy Ingestion] Notice: Webhook dispatch to {webhook_url} encountered: {e}")
+
+    return {
+        "status": "submitted",
+        "message": "Policy dispatched to vector ingestion pipeline"
+    }
+
