@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from routers import admin, search, bookings
+from routers import admin, search, bookings, support
 import auth
 
 app = FastAPI(
@@ -34,6 +34,7 @@ app.include_router(admin.router)
 app.include_router(search.router)
 app.include_router(bookings.router)
 app.include_router(auth.router)
+app.include_router(support.router)
 
 # Dedicated Frontend Directory Mount
 frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")

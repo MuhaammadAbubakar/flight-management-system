@@ -116,3 +116,27 @@ class CancelBookingSchema(BaseModel):
         if v < 1:
             raise ValueError("seats_to_cancel kam az kam 1 honi chahiye!")
         return v
+
+
+# --- Support Ticket Schema ---
+class SupportTicketCreate(BaseModel):
+    customer_email: EmailStr
+    flight_number: str
+    customer_query: str
+
+    @field_validator("flight_number", mode="before")
+    @classmethod
+    def uppercase_flight_num(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
+
+    @field_validator("customer_email", mode="before")
+    @classmethod
+    def lowercase_email(cls, v):
+        return v.strip().lower() if isinstance(v, str) else v
+
+    @field_validator("customer_query")
+    @classmethod
+    def validate_query(cls, v):
+        if not v or not v.strip():
+            raise ValueError("customer_query cannot be empty!")
+        return v.strip()
