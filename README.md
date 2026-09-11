@@ -3,7 +3,7 @@ An enterprise-grade, full-stack airline reservation and operations platform buil
 
 Architecture Overview
 Frontend: Vanilla HTML5, Modern CSS3, JavaScript (Fetch API, Token-based Auth) deployed via CDN/static hosting.
-
+k
 Backend: FastAPI (Python 3.13) containerized and continuously deployed on Railway.
 
 Database & Auth: PostgreSQL hosted on Supabase with relational constraints and indexing.
